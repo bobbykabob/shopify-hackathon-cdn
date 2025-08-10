@@ -13,23 +13,48 @@ def process_glb_to_splat(glb_file_path):
         mesh = list(scene.geometry.values())[0]
     else:
         mesh = scene
-    positions = np.array(mesh.vertices, dtype=np.float32)
-    # Sample colors from texture using UV coordinates
-    colors = np.full((positions.shape[0], 3), 255, dtype=np.uint8)
-    if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None and hasattr(mesh.visual, 'material') and hasattr(mesh.visual.material, 'baseColorTexture') and mesh.visual.material.baseColorTexture is not None:
+    # Uniformly sample points on the mesh surface
+    num_samples = 10000  # Default, can be parameterized
+    faces = mesh.faces
+    vertices = mesh.vertices
+    face_areas = mesh.area_faces
+    face_probs = face_areas / face_areas.sum()
+    sampled_faces = np.random.choice(len(faces), size=num_samples, p=face_probs)
+    sampled_points = []
+    sampled_uvs = []
+    if hasattr(mesh.visual, 'uv') and mesh.visual.uv is not None:
         uv = mesh.visual.uv
+    else:
+        uv = None
+    for f_idx in sampled_faces:
+        v_idx = faces[f_idx]
+        # Barycentric coordinates
+        r1 = np.random.rand()
+        r2 = np.random.rand()
+        sqrt_r1 = np.sqrt(r1)
+        b0 = 1 - sqrt_r1
+        b1 = sqrt_r1 * (1 - r2)
+        b2 = sqrt_r1 * r2
+        pos = b0 * vertices[v_idx[0]] + b1 * vertices[v_idx[1]] + b2 * vertices[v_idx[2]]
+        sampled_points.append(pos)
+        if uv is not None:
+            uv0, uv1, uv2 = uv[v_idx[0]], uv[v_idx[1]], uv[v_idx[2]]
+            uv_sample = b0 * uv0 + b1 * uv1 + b2 * uv2
+            sampled_uvs.append(uv_sample)
+    sampled_points = np.array(sampled_points, dtype=np.float32)
+    colors = np.full((num_samples, 3), 255, dtype=np.uint8)
+    if uv is not None and hasattr(mesh.visual, 'material') and hasattr(mesh.visual.material, 'baseColorTexture') and mesh.visual.material.baseColorTexture is not None:
         img = mesh.visual.material.baseColorTexture
         img = img.convert('RGB')
         w, h = img.size
-        for i, uv_coord in enumerate(uv):
-            # UV coordinates are typically in [0, 1]
+        for i, uv_coord in enumerate(sampled_uvs):
             x = int(uv_coord[0] * w)
-            y = int((1 - uv_coord[1]) * h)  # Flip Y axis for most GLTFs
+            y = int((1 - uv_coord[1]) * h)
             x = np.clip(x, 0, w - 1)
             y = np.clip(y, 0, h - 1)
             colors[i] = img.getpixel((x, y))
     buffer = BytesIO()
-    for pos, color in zip(positions, colors):
+    for pos, color in zip(sampled_points, colors):
         buffer.write(pos.tobytes())
         buffer.write(color.astype(np.uint8).tobytes())
     return buffer.getvalue()
