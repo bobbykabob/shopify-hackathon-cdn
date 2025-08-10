@@ -7,6 +7,8 @@ import argparse
 # Note: .splat format here is assumed to be similar to the one used in ply_to_splat.py, but with only position and color (no scale, rotation, or SH coefficients).
 
 def process_glb_to_splat(glb_file_path):
+    import random
+    debug_samples = []
     import PIL.Image
     scene = trimesh.load(glb_file_path)
     if hasattr(scene, 'geometry'):
@@ -26,7 +28,7 @@ def process_glb_to_splat(glb_file_path):
         uv = mesh.visual.uv
     else:
         uv = None
-    for f_idx in sampled_faces:
+    for idx, f_idx in enumerate(sampled_faces):
         v_idx = faces[f_idx]
         # Barycentric coordinates
         r1 = np.random.rand()
@@ -41,6 +43,8 @@ def process_glb_to_splat(glb_file_path):
             uv0, uv1, uv2 = uv[v_idx[0]], uv[v_idx[1]], uv[v_idx[2]]
             uv_sample = b0 * uv0 + b1 * uv1 + b2 * uv2
             sampled_uvs.append(uv_sample)
+        if idx < 10:
+            debug_samples.append({'face': f_idx, 'v_idx': v_idx.tolist(), 'pos': pos.tolist(), 'bary': [b0, b1, b2], 'uv': uv_sample.tolist() if uv is not None else None})
     sampled_points = np.array(sampled_points, dtype=np.float32)
     colors = np.full((num_samples, 3), 255, dtype=np.uint8)
     if uv is not None and hasattr(mesh.visual, 'material') and hasattr(mesh.visual.material, 'baseColorTexture') and mesh.visual.material.baseColorTexture is not None:
@@ -53,10 +57,36 @@ def process_glb_to_splat(glb_file_path):
             x = np.clip(x, 0, w - 1)
             y = np.clip(y, 0, h - 1)
             colors[i] = img.getpixel((x, y))
+            if i < 10:
+                debug_samples[i]['color'] = colors[i].tolist()
     buffer = BytesIO()
-    for pos, color in zip(sampled_points, colors):
-        buffer.write(pos.tobytes())
-        buffer.write(color.astype(np.uint8).tobytes())
+    SH_C0 = 0.28209479177387814
+    default_scale = np.array([0.0, 0.0, 0.0], dtype=np.float32)  # log(1) = 0
+    default_rot = np.array([1.0, 0.0, 0.0, 0.0], dtype=np.float32)  # identity quaternion
+    default_opacity = 1.0
+    for i, (pos, color) in enumerate(zip(sampled_points, colors)):
+        # Position (3 floats)
+        buffer.write(pos.astype(np.float32).tobytes())
+        # Scale (3 floats, log scale as in ply_to_splat.py)
+        buffer.write(default_scale.tobytes())
+        # Color (4 uint8: RGB from texture, A from opacity)
+        rgba = np.array([
+            color[0],
+            color[1],
+            color[2],
+            int(255 * default_opacity)
+        ], dtype=np.uint8)
+        buffer.write(rgba.tobytes())
+        # Rotation (4 uint8: normalized quaternion mapped to [0,255])
+        rot = default_rot / np.linalg.norm(default_rot)
+        rot_bytes = ((rot * 128) + 128).clip(0, 255).astype(np.uint8)
+        buffer.write(rot_bytes.tobytes())
+        if i < 10:
+            debug_samples[i]['rgba'] = rgba.tolist()
+            debug_samples[i]['rot_bytes'] = rot_bytes.tolist()
+    print("DEBUG SAMPLES (first 10):")
+    for sample in debug_samples:
+        print(sample)
     return buffer.getvalue()
 
 def save_splat_file(splat_data, output_path):
